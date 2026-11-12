@@ -1,0 +1,75 @@
+# Source of truth for the scheduled mirror run. Installed by hand as
+# .github/workflows/mirror.yml in the public data repository (bringie/scp-reader-data);
+# see mirror/README.md, "Installing the workflow".
+name: mirror
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: 'Rebuild a media kind from scratch (mirror run --rebuild); none for a normal run'
+        type: choice
+        required: false
+        default: none
+        options:
+          - none
+          - images
+          - attachments
+          - all
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Check out the mirror code (private repository, read-only deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: bringie/scp-reader
+          ssh-key: ${{ secrets.SCP_READER_DEPLOY_KEY }}
+          persist-credentials: false
+          path: code
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: code/mirror/package-lock.json
+
+      - name: Install
+        working-directory: code/mirror
+        run: npm ci
+
+      - name: Test
+        working-directory: code/mirror
+        env:
+          REDOS_BOUND_MS: 5000
+        run: npm test
+
+      - name: Typecheck
+        working-directory: code/mirror
+        run: npm run typecheck
+
+      - name: Mirror run
+        working-directory: code/mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIRROR_DELAY_MS: 500
+          # Empty on scheduled runs, `none` by default on manual ones; passed through the
+          # environment, never into the script text.
+          MIRROR_REBUILD: ${{ inputs.rebuild }}
+        run: |
+          if [ -n "$MIRROR_REBUILD" ] && [ "$MIRROR_REBUILD" != none ]; then
+            npm run mirror -- run --rebuild "$MIRROR_REBUILD"
+          else
+            npm run mirror -- run
+          fi
